@@ -1,0 +1,18 @@
+TODO
+----
+* Create a CGI providing an admin interface, leveraging the socket control
+	mechanism
+* Clean up documentation
+* Extend alias to support custom TTL
+* Fix shutdown to properly terminate threads
+* Implement rmalias, rmlisten
+* Implement dump to export current state in format that could later be loaded
+* Investigate alternative backends for alias mapping, including memcache & repcache, sqlite, etc.
+
+DEVELOPMENT
+-----------
+* New commands are created simply by adding methods to CNamedCommander
+	class.
+* Can number of classes be reduced?
+* Data currently written to Resolver as text, and read as encoded
+	message.  Need to be able to read as text, for "dump" or logging.
