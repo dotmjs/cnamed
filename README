@@ -6,6 +6,18 @@ cnamed is a simple DNS server that responds with alias (CNAME) answers to A or C
 queries, and provides an interactive control interface to allow dynamic
 manipulation of the alias mapping.
 
+************************************************************************
+******Warning******
+cnamed is not yet production quality.  Heck, it's probably not even 
+alpha quality yet.  So, feel free to play with it, but don't expect
+much, yet.
+************************************************************************
+
+License
+-------
+The code and all files in this project are released under the Apache 2.0
+license.  Please see the file LICENSE for the full license text.
+
 Simple Operation
 ----------------
 cnamed can be started simply as:
