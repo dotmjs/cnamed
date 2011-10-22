@@ -1,0 +1,74 @@
+cnamed
+======
+Description
+-----------
+cnamed is a simple DNS server that responds with alias (CNAME) answers to A or CNAME
+queries, and provides an interactive control interface to allow dynamic
+manipulation of the alias mapping.
+
+Simple Operation
+----------------
+cnamed can be started simply as:
+./cnamed
+
+Once at the cnamed prompt (">"), a UDP DNS Server can be started by
+entering the following:
+listen udp localhost 1053
+
+Similarly, a TCP DNS server can be started with:
+listen tcp localhost 1053
+
+Note that 1053 is not the normal DNS port, but use of 53 requires root access.
+1053 will suffice for testing.
+
+Now that listeners are created, aliases can be added:
+alias example.com a.example.com 2
+alias example.com b.example.com 5
+
+This adds two entries mapping example.com to a.example.com with a weight
+of 2, and to b.example.com with a weight of 5.  Requests for example.com
+should be answered roughly 2 out of every 7 times with a.example.com, and
+5 out of every 7 times with b.example.com.
+
+This can be tested using "dig" in another terminal:
+dig -p1053 @localhost example.com
+
+The server can be shutdown by issuing:
+shutdown
+
+Server Operation
+----------------
+The interactive session described above is great for testing, but a server
+generally needs to run disconnected from stdin/stdout.  cnamed provides
+a Unix Domain Socket control interface when run as follows:
+./cnamed /path/to/socket
+
+Note that the "/path/to" directory should be protected by standard 
+permissions to limit who has access to crontrol cnamed.
+
+This socket can be connected to using netcat:
+nc -U /path/to/socket
+
+This allows for standard piping:
+echo "listen tcp localhost 4455" | nc -U /path/to/socket
+
+Or bulk loading where cnamed.conf already contains a series of cnamed
+commands:
+cat /etc/cnamed/cnamed.conf | nc -U /path/to/socket
+
+Other Notes
+-----------
+Entering "?" at the prompt will list all available commands.  Entering
+"?" followed by a command will display information about that command:
+? alias
+
+TODO
+----
+* Create a CGI providing an admin interface, leveraging the socket control
+	mechanism
+* Clean up documentation
+* Extend alias to support custom TTL
+* Fix shutdown to properly terminate threads
+* Implement rmalias, rmlisten
+* Implement dump to export current state in format that could later be loaded
+* Investigate alternative backends for alias mapping, including memcache & repcache, sqlite, etc.
