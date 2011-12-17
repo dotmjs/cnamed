@@ -3,7 +3,7 @@ TODO
 * Create a CGI providing an admin interface, leveraging the socket control
 	mechanism
 * Clean up documentation
-* Extend alias to support custom TTL
+* Extend alias and Resolver.encode_answer() to support custom TTL
 * Fix shutdown to properly terminate threads
 * Implement rmalias, rmlisten
 * Implement dump to export current state in format that could later be loaded
