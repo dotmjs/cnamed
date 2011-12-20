@@ -25,6 +25,19 @@ class ThreadedUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
 	ThreadingMixIn and UDPServer."""
 	pass
 
+class UDPDNSHandler(socketserver.BaseRequestHandler):
+	"""socketserver UDP handler.  Passes DNS request to aliasdb, and
+	returns response."""
+	def handle(self):
+		#Request
+		message = self.request[0]
+		sock = self.request[1]
+		#Response
+		message=self.server.aliasdb.resolve(message)
+		if(len(message)>512):
+			message[2]|=0x02
+		sock.sendto(message[:512], self.client_address)
+
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 	"""Simple class to create a Threaded TCP Server by mixing the
 	ThreadingMixIn and TCPServer."""
@@ -32,33 +45,44 @@ class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 class TCPDNSHandler(socketserver.BaseRequestHandler):
 	"""socketserver TCP handler.  Reads DNS request size from first two
-	bytes of stream, then passes remaining message to resolver.  Upon
+	bytes of stream, then passes remaining message to aliasdb.  Upon
 	receiving response, writes 2 byte size of response and response.
 	"""
 	def handle(self):
-		request=bytes()
-		size_header=self.request.recv(2)
-		size=(size_header[0]<<8)+size_header[1]
-		while(size>0):
-			request+=self.request.recv(size)
-			size-=len(request)
-		response=self.server.resolver.resolve(request)
-		size=len(response)
-		self.request.send(bytes([size>>8,size%256]))
-		self.request.send(response)
+		#Request
+		message=bytes()
+		s=self.request.recv(2)
+		message_size=(s[0]<<8)+s[1]
+		while(message_size>0):
+			message+=self.request.recv(size)
+			message_size-=len(message)
+		#Response
+		message=self.server.aliasdb.resolve(message)
+		message_size=len(message)
+		self.request.send(bytes([message_size>>8,message_size%256]))
+		self.request.send(message)
 		self.request.close()
 
-class UDPDNSHandler(socketserver.BaseRequestHandler):
-	"""socketserver UDP handler.  Passes DNS request to resolver, and
-	returns response."""
+class UnixStreamServer(socketserver.UnixStreamServer):
+	
+	def __init__(self,*args,controller=None,**kwargs):
+		socketserver.UnixStreamServer.__init__(self,*args,**kwargs)
+		self.controller=controller
+		
+	"""Local UnixStreamServer to override handle_error()."""
+	def handle_error(self, request,client_address):
+		"""If exception is thrown by child thread, rethrow in main"""
+		ei=sys.exc_info()
+		if(ei[1]): raise(ei[1])
+		print(sys.exc_info())
+		
+class USSHandler(socketserver.StreamRequestHandler):
+	"""UnixStreamServer handler to connect the socket stream to the 
+	CommandController for interactive control of CNameD."""
 	def handle(self):
-		request = self.request[0]
-		sock = self.request[1]
-		response=self.server.resolver.resolve(request)
-		if(len(response)>512):
-			response[2]|=0x02
-		sock.sendto(response[:512], self.client_address)
-
+		self.server.controller.handle(self.rfile,self.wfile)
+		
+	
 class CommandController():
 	"""CommandController accepts a single "commander" object at construction time,
 	then upon call to handle(in,out) parses an input stream into line-delimited
@@ -68,42 +92,57 @@ class CommandController():
 	passed to the output stream.  The final line returned after each
 	command a numeric code follwed by a single-word error name in
 	parens, e.g. "3: (ERROR)"."""
+	ERRORS=["OK","SYSTEM: System Error","INVALID: Invalid Command","PARAMS: Invalid Parameters"]
+		
 	def __init__(self,commandlet):
 		self.commandlet=commandlet
 		
 	def handle(self,instream, outstream):
+		code=0
 		while True:
 			try:
-				outstream.write("\n> ".encode())
+				outstream.write(("%%%s %s\n"%(code,self.ERRORS[code])).encode())
 				outstream.flush()
 				line=instream.readline().decode()
 
-				if(not line): return #EOF
+				#Test for EOF, end session
+				if(not line): return
+				
 				command=line.strip().split()
-				if(len(command)==0): continue #Blank Line
-				if(command[0]=="?" and len(command)==1): #? = Print Help - all function names and docstrings
-					outstream.write(("0 (OK)\nUse \"? <command>\" for help on a specific command: "+(", ".join([a for a in dir(self.commandlet) if(re.match("^[a-zA-Z][a-zA-Z0-9_]*$",a))]))).encode())
+				
+				#Test for blank line, ignore
+				if(len(command)==0): continue
+				
+				#Test for "?", print help - all commands and docstrings
+				if(command[0]=="?" and len(command)==1):
+					outstream.write(("# Use \"? <command>\" for help on a specific command: %s\n"%(", ".join([a for a in dir(self.commandlet) if(re.match("^[a-zA-Z][a-zA-Z0-9_]*$",a))]))).encode())
+
+				#Test for "? command", print command docstring
 				elif(command[0]=="?" and len(command)==2):
 					import inspect
 					f=getattr(self.commandlet,command[1])
 					args=inspect.getfullargspec(f)[0]
 					doc=getattr(self.commandlet,command[1]).__doc__
 					if(not doc): doc="No documentation available"
-					s=command[1]+" "+" ".join(["[%s]"%(a) for a in args if a!="self"])+" : "+doc
-					outstream.write(("0 (OK)\n"+s).encode())
-				#All commands must start with a letter, and be followed with alpha, num, or _
+					doc=doc.replace("\n","\n# ")
+					outstream.write(("# "+command[1]+" "+" ".join(["[%s]"%(a) for a in args if a!="self"])+" : "+doc+"\n").encode())
+					
+				#Test for "command" - all commands must start with a letter, and be followed with alpha, num, or _
 				elif(not re.match("^[a-zA-Z][a-zA-Z0-9_]*$",command[0])): raise AttributeError()
 				else:
 					#Try call of command on commandlet, throws AttributeError if not valid
 					s=getattr(self.commandlet,command[0])(*command[1:])
 					if(not s):s=""
-					outstream.write(("0 (OK)\n%s\n"%(s)).encode())
+					outstream.write((s+"\n").encode())
+				code=0
 			except AttributeError as e:
-				outstream.write("2 (INVALID)\nInvalid Command".encode())
+				code=2
 			except TypeError as e:
-				print(e)
-				outstream.write("4 (PARAMS)\nInvalid Parameters".encode())
+				code=3
+			except ValueError as e:
+				code=3
 			except Exception as e:
+				code=1
 				print("***")
 				import traceback
 				traceback.print_exc()
@@ -111,10 +150,10 @@ class CommandController():
 				outstream.flush()
 
 class CNamedCommander():
-	"""Provides methods to update, query, and control the resolver."""
-	def __init__(self,resolver):
+	"""Provides methods to update, query, and control the aliasdb."""
+	def __init__(self,aliasdb):
 		self.__data__=dict()
-		self.__resolver__=resolver
+		self.__aliasdb__=aliasdb
 		
 	def echo(self,*args):
 		"""Returns all arguments"""
@@ -126,47 +165,33 @@ class CNamedCommander():
 
 	def alias(self, alias, hostname,weight):
 		"""Adds an alias to hostname mapping with supplied weight and optional ttl (defaults to 0)"""
-		self.__resolver__.update(alias,hostname,int(weight))
+		self.__aliasdb__.update(alias,hostname,int(weight))
 		
 #	def dump(self):
 #		"""Dump database in loadable format"""
 #		return("".join(["alias %s\n"%(alias) for alias in self.data]))
 
 	def listen(self, protocol,address, port):
-		"""Start listener for protocol (udp|tcp) on address:port"""
+		"""Start listener for protocol(udp|tcp) on address:port"""
 		port=int(port)
 		if(protocol=="udp"):
 			udpServer = ThreadedUDPServer((address, port), UDPDNSHandler)
-			udpServer.resolver=self.__resolver__
+			udpServer.aliasdb=self.__aliasdb__
 			udp_thread = threading.Thread(target=udpServer.serve_forever)
 			udp_thread.setDaemon(True)
 			udp_thread.start()
 		elif(protocol=="tcp"):
 			tcpServer = ThreadedTCPServer((address, port), TCPDNSHandler)
-			tcpServer.resolver=self.__resolver__
+			tcpServer.aliasdb=self.__aliasdb__
 			tcp_thread = threading.Thread(target=tcpServer.serve_forever)
 			tcp_thread.setDaemon(True)
 			tcp_thread.start()
 		else:
 			raise(TypeError())
 		
-class USSHandler(socketserver.StreamRequestHandler):
-	"""UnixStreamServer handler to connect the socket stream to the 
-	CommandController for interactive control of CNameD."""
-	def handle(self):
-		self.server.controller.handle(self.rfile,self.wfile)
 		
-class UnixStreamServer(socketserver.UnixStreamServer):
-	"""Local UnixStreamServer to override handle_error()."""
-	def handle_error(self, request,client_address):
-		"""If exception is thrown by child thread, rethrow in main"""
-		ei=sys.exc_info()
-		if(ei[1]): raise(ei[1])
-		print(sys.exc_info())
-		
-class Resolver():
-	"""Does the heavy lifting of encoding/decoding and resolving queries.
-	"""
+class AliasDB():
+	"""Does the heavy lifting of encoding/decoding and resolving queries."""
 	def __init__(self):
 		self.__data__=dict()
 
@@ -236,8 +261,7 @@ if __name__ == "__main__":
 	ussServer=None
 	if(len(sys.argv)==2):
 		sockpath=sys.argv[1]
-		ussServer=UnixStreamServer(sockpath,USSHandler)
-		ussServer.controller=CommandController(CNamedCommander(Resolver()))
+		ussServer=UnixStreamServer(sockpath,USSHandler,controller=CommandController(CNamedCommander(AliasDB())))
 		try:
 			ussServer.serve_forever()
 		except KeyboardInterrupt:
@@ -249,7 +273,7 @@ if __name__ == "__main__":
 			if(ussServer):ussServer.server_close()
 	else:
 		try:
-			c=CommandController(CNamedCommander(Resolver())).handle(sys.stdin.buffer,sys.stdout.buffer)
+			c=CommandController(CNamedCommander(AliasDB())).handle(sys.stdin.buffer,sys.stdout.buffer)
 		except KeyboardInterrupt:
 			print("Keyboard shutdown (^C) detected.")		
 		except SystemExit:
