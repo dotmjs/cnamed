@@ -4,9 +4,9 @@
 #Licensed under the Apache License, Version 2.0 (the "License");
 #you may not use this file except in compliance with the License.
 #You may obtain a copy of the License at
-
+#
 #  http://www.apache.org/licenses/LICENSE-2.0
-
+#
 #Unless required by applicable law or agreed to in writing, software
 #distributed under the License is distributed on an "AS IS" BASIS,
 #WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -19,6 +19,7 @@ import re
 import socketserver
 import threading
 import random
+import dns
 
 class ThreadedUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
 	"""Simple class to create a Threaded UDP Server by mixing the
@@ -30,10 +31,10 @@ class UDPDNSHandler(socketserver.BaseRequestHandler):
 	returns response."""
 	def handle(self):
 		#Request
-		message = self.request[0]
+		query = dns.Query(self.request[0])
 		sock = self.request[1]
 		#Response
-		message=self.server.aliasdb.resolve(message)
+		message=self.server.aliasdb.resolve(query)
 		if(len(message)>512):
 			message[2]|=0x02
 		sock.sendto(message[:512], self.client_address)
@@ -54,10 +55,10 @@ class TCPDNSHandler(socketserver.BaseRequestHandler):
 		s=self.request.recv(2)
 		message_size=(s[0]<<8)+s[1]
 		while(message_size>0):
-			message+=self.request.recv(size)
+			message+=self.request.recv(message_size)
 			message_size-=len(message)
 		#Response
-		message=self.server.aliasdb.resolve(message)
+		message=self.server.aliasdb.resolve(dns.Query(message))
 		message_size=len(message)
 		self.request.send(bytes([message_size>>8,message_size%256]))
 		self.request.send(message)
@@ -161,7 +162,7 @@ class CNamedCommander():
 	
 	def shutdown(self):
 		"""Shutdown %s"""%(sys.argv[0])
-		sys.exit(0)
+		raise SystemExit(0)
 
 	def alias(self, alias, hostname,weight):
 		"""Adds an alias to hostname mapping with supplied weight and optional ttl (defaults to 0)"""
@@ -226,33 +227,37 @@ class AliasDB():
 		#RR is encoded qname+TYPE=CNAME+CLASS=IN+TTL=0+size(encoded name)+encoded name
 		return(eqname+bytes([0x00,0x05,0x00,0x01,0x00,0x00,0x00,0x00])+bytes([size>>8,size%256])+ername)
 
-	def resolve(self,request):
-		header=bytearray(request[0:12])
-		question=request[12:]
-		if ( not((header[2]&0x80 == 0) and (header[2]&0x78 == 0 ) and (header[3]&0x70 == 0 ))): #qr=query && opcode=QUERY  && Z=0
-			header[2]|= 0x84 #set QR,AA flags
-			header[2]&= 0x87 #clr OPCODE,TC
-			header[3] =0x01  #set RCODE=1,clr RA,Z
-			response=header+question
-			return(response)
-			
-		header[2]|= 0x84 #set QR,AA
-		header[2]&= 0xFD #clr TC
-		header[3] = 0x00 #clr RA,Z,RCODE
-		header[6:12]=[0x00,0x01,0x00,0x00,0x00,0x00] #Set ANCOUNT=1
+	def resolve(self,query):
+		#header=bytearray(request[0:12])
+		#question=request[12:]
+		print(query)
+		if ((query.qr!=0) and (query.opcode==0 ) and (query.z==0 )): #qr=query && opcode=QUERY  && Z=0
+			#TODO: return error packet
+			#header[2]|= 0x84 #set QR,AA flags
+			#header[2]&= 0x87 #clr OPCODE,TC
+			#header[3] =0x01  #set RCODE=1,clr RA,Z
+			#response=header+question
+			return(query)
 
-		#Validate QCLASS=IN and QTYPE=A or QTYPE=CNAME
-		if(question[-4]==0 and question[-2]==0 and question[-1]==1 and (question[-3]==1 or question[-3]==5)):
-			answers=self.__data__.get(question[:-4])
-			if(answers):
-				response=header+question+random.choice(answers)
+		#TODO: Format response header
+		#header[2]|= 0x84 #set QR,AA
+		#header[2]&= 0xFD #clr TC
+		#header[3] = 0x00 #clr RA,Z,RCODE
+		#header[6:12]=[0x00,0x01,0x00,0x00,0x00,0x00] #Set ANCOUNT=1
+
+		for question in query.questions:
+			#Validate QCLASS=IN and QTYPE=A or QTYPE=CNAME
+			if(question.qclass==0 and (question.qtype==1 or question.qtype==5)):
+				answers=self.__data__.get(question[:-4])
+				if(answers):
+					response=header+question+random.choice(answers)
+				else:
+					header[3]|=0x03
+					response=header+question
 			else:
-				header[3]|=0x03
+				header[3]|=0x04
 				response=header+question
-		else:
-			header[3]|=0x04
-			response=header+question
-		
+			
 		return(response)
 
 
